@@ -1,8 +1,12 @@
 from agents import Agent, Runner, TResponseInputItem
-from agents.mcp import MCPServerStreamableHttp, MCPServerStreamableHttpParams
+from agents.tool import FunctionTool
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 from dotenv import load_dotenv
+from functools import partial
 import os
 import asyncio
+import json
 
 # Load environment variables
 load_dotenv()
@@ -25,28 +29,54 @@ SYSTEM_PROMPT = (
 MODEL = "gpt-4o-mini"
 
 
+async def invoke_tool(context, args, tool_name: str, client: Client) -> str:
+    result = await client.call_tool(tool_name, json.loads(args))
+    # FastMCP returns a CallToolResult — extract text from its content items
+    parts = [item.text if hasattr(item, "text") else str(item) for item in result.content]
+    return "\n".join(parts)
+
+
+def sanitize_schema(schema: dict) -> dict:
+    # OpenAI requires object schemas to have a `properties` field
+    if schema.get("type") == "object" and "properties" not in schema:
+        schema = {**schema, "properties": {}}
+    return schema
+
+
+async def get_tools(client: Client) -> list[FunctionTool]:
+    mcp_tools = await client.list_tools()
+    return [
+        FunctionTool(
+            name=tool.name,
+            description=tool.description or "",
+            params_json_schema=sanitize_schema(tool.inputSchema),
+            on_invoke_tool=partial(invoke_tool, tool_name=tool.name, client=client),
+            strict_json_schema=False,
+        )
+        for tool in mcp_tools
+    ]
+
+
 async def main():
     # Connect to Arcade's MCP gateway via streamable HTTP with header auth
-    mcp_server = MCPServerStreamableHttp(
-        params=MCPServerStreamableHttpParams(
-            url=ARCADE_MCP_URL,
-            headers={
-                "Authorization": f"Bearer {ARCADE_API_KEY}",
-                "Arcade-User-ID": ARCADE_USER_ID,
-            },
-            timeout=30,
-            sse_read_timeout=300,
-        ),
-        client_session_timeout_seconds=30,
+    transport = StreamableHttpTransport(
+        url=ARCADE_MCP_URL,
+        headers={
+            "Authorization": f"Bearer {ARCADE_API_KEY}",
+            "Arcade-User-ID": ARCADE_USER_ID,
+        },
     )
 
-    async with mcp_server:
-        # Create an agent — tools are discovered automatically from the MCP gateway
+    async with Client(transport) as client:
+        # Fetch tools from the gateway and convert to OpenAI Agents SDK FunctionTools
+        tools = await get_tools(client)
+
+        # Create an agent with the fetched tools
         agent = Agent(
             name="Inbox Assistant",
             instructions=SYSTEM_PROMPT,
             model=MODEL,
-            mcp_servers=[mcp_server],
+            tools=tools,
         )
 
         # Initialize the conversation
