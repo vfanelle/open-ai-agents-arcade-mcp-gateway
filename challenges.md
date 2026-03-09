@@ -45,9 +45,38 @@ Even though Gmail was already authorized in Arcade, the agent kept triggering th
 
 ---
 
-## 6. No signal when URL elicitation (OAuth) completes
+## 6. No signal when URL elicitation (OAuth) completes (OAI MCP client)
 **Fault:** MCP protocol limitation
 
 After the agent presents an OAuth URL, there is no mechanism in the MCP protocol for the gateway to push a "authorization complete" notification back to the client. The agent just stalls waiting for the user to do something.
 
 **Fix:** Updated the system prompt to instruct the agent to ask the user to confirm when authorization is complete, then automatically retry the original request.
+
+---
+
+# FastMCP Client
+
+## 7. `fastmcp` not installed in the virtual environment
+**Fault:** Us
+
+Ran `pip install fastmcp` against the system Python instead of the project venv, so the module wasn't available when running `python3 main.py` inside the venv.
+
+**Fix:** Install into the venv explicitly — `venv/bin/pip install fastmcp`.
+
+---
+
+## 8. Invalid tool schema — object missing `properties`
+**Fault:** Arcade gateway / OpenAI API strictness
+
+Some tools (e.g. `Gmail_ListLabels`) have an input schema of `{"type": "object"}` with no `properties` field. OpenAI's API rejects these with `invalid_function_parameters`.
+
+**Fix:** Added a `sanitize_schema()` helper that injects `"properties": {}` into any object schema missing it before passing to `FunctionTool`.
+
+---
+
+## 9. `CallToolResult` is not iterable
+**Fault:** Us (incorrect assumption about FastMCP's return type)
+
+Assumed `client.call_tool()` returns a list of content items directly (like the raw MCP SDK). FastMCP wraps the result in a `CallToolResult` object — iterating over it directly raises `TypeError: 'CallToolResult' object is not iterable`.
+
+**Fix:** Access `.content` on the result — `result.content` is the list of MCP content items.
